@@ -10,6 +10,7 @@ defmodule Llama.Application do
     children = [
       # Start the Telemetry supervisor
       LlamaWeb.Telemetry,
+      {Nx.Serving, serving: llama(), name: ChatServing},
       # Start the PubSub system
       {Phoenix.PubSub, name: Llama.PubSub},
       # Start Finch
@@ -24,6 +25,18 @@ defmodule Llama.Application do
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Llama.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  def llama() do
+    auth_token = System.fetch_env!("HF_AUTH_TOKEN")
+    llama = {:hf, "meta-llama/Llama-2-7b-chat-hf", auth_token: auth_token}
+
+    {:ok, model_info} = Bumblebee.load_model(llama, backend: {EXLA.Backend, client: :host})
+    {:ok, tokenizer} = Bumblebee.load_tokenizer(llama)
+    {:ok, generation_config} = Bumblebee.load_generation_config(llama)
+
+    generation_config = Bumblebee.configure(generation_config, max_new_tokens: 250)
+    Bumblebee.Text.generation(model_info, tokenizer, generation_config, defn_options: [compiler: EXLA])
   end
 
   # Tell Phoenix to update the endpoint configuration

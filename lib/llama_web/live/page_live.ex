@@ -4,12 +4,10 @@ defmodule LlamaWeb.PageLive do
   @impl true
   def mount(_, _, socket) do
     messages = []
-    model = Replicate.Models.get!("meta/llama-2-7b-chat")
-    version = Replicate.Models.get_latest_version!(model)
 
     socket =
       socket
-      |> assign(version: version, messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, path: nil, loading: false)
+      |> assign(messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, path: nil, loading: false)
       |> allow_upload(:document, accept: ~w(.pdf), progress: &handle_progress/3, auto_upload: true, max_entries: 1)
 
     {:ok, socket}
@@ -61,7 +59,6 @@ defmodule LlamaWeb.PageLive do
   @impl true
   def handle_info({ref, {context, 0}}, socket) when socket.assigns.ocr.ref == ref do
     question = socket.assigns.question
-    version = socket.assigns.version
 
     prompt =
     """
@@ -75,11 +72,19 @@ defmodule LlamaWeb.PageLive do
 
     llama =
       Task.async(fn ->
-        {:ok, prediction} = Replicate.Predictions.create(version, %{prompt: prompt})
-        Replicate.Predictions.wait(prediction)
+        Nx.Serving.batched_run(ChatServing, prompt)
       end)
 
     {:noreply, assign(socket, ocr: nil, llama: llama)}
+  end
+
+  @impl true
+  def handle_info({ref, %{results: [%{text: result}]}}, socket) when socket.assigns.llama.ref == ref do
+    [_, text] = String.split(result, "[/INST]")
+    messages = socket.assigns.messages
+    new_messages = messages ++ [%{user_id: nil, text: String.trim(text), inserted_at: DateTime.utc_now()}]
+
+    {:noreply, assign(socket, llama: nil, messages: new_messages, loading: false, question: nil)}
   end
 
   @impl true
