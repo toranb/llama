@@ -1,5 +1,12 @@
 # Llama
 
+First install a few dependencies on macOS
+
+```
+  brew install poppler
+  brew install tesseract
+```
+
 To start your Phoenix server:
 
   * Run `mix setup` to install and setup dependencies
