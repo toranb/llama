@@ -14,11 +14,6 @@ defmodule LlamaWeb.PageLive do
   end
 
   @impl true
-  def handle_event("noop", %{}, socket) do
-    {:noreply, socket}
-  end
-
-  @impl true
   def handle_event("change_text", %{"message" => text}, socket) do
     socket = socket |> assign(text: text)
 
