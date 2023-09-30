@@ -7,9 +7,17 @@ defmodule LlamaWeb.PageLive do
     model = Replicate.Models.get!("meta/llama-2-7b-chat")
     version = Replicate.Models.get_latest_version!(model)
 
-    socket = socket |> assign(version: version, messages: messages, text: nil, query: nil, loading: false)
+    socket =
+      socket
+      |> assign(version: version, messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, path: nil, loading: false)
+      |> allow_upload(:document, accept: ~w(.pdf), progress: &handle_progress/3, auto_upload: true, max_entries: 1)
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_event("noop", %{}, socket) do
+    {:noreply, socket}
   end
 
   @impl true
@@ -20,43 +28,87 @@ defmodule LlamaWeb.PageLive do
   end
 
   @impl true
-  def handle_event("add_message", %{"message" => text}, socket) do
-    version = socket.assigns.version
-    messages = socket.assigns.messages
-    new_messages = messages ++ [%{user_id: 1, text: text, inserted_at: DateTime.utc_now()}]
+  def handle_event("add_message", _, %{assigns: %{loading: true}} = socket) do
+    {:noreply, socket}
+  end
 
-    prompt = """
-    [INST] <<SYS>>
-    You are an assistant for question-answering tasks.
-    If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.
-    <</SYS>>
-    #{text} [/INST] \
-    """
+  @impl true
+  def handle_event("add_message", %{"message" => question}, socket) do
+    path = socket.assigns.path
+    messages = socket.assigns.messages
+    new_messages = messages ++ [%{user_id: 1, text: question, inserted_at: DateTime.utc_now()}]
 
     query =
       Task.async(fn ->
-        {:ok, prediction} = Replicate.Predictions.create(version, %{prompt: prompt})
-        Replicate.Predictions.wait(prediction)
+        System.cmd("pdftoppm", [path] ++ ~w(demo -png))
       end)
 
-    socket = socket |> assign(query: query, loading: true, text: nil, messages: new_messages)
+    socket = socket |> assign(query: query, messages: new_messages, loading: true, text: nil, question: question)
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({ref, {:ok, prediction}}, socket) when socket.assigns.query.ref == ref do
+  def handle_info({ref, _}, socket) when socket.assigns.query.ref == ref do
+    ocr =
+      Task.async(fn ->
+        System.cmd("tesseract", ~w(demo-1.png stdout))
+      end)
+
+    {:noreply, assign(socket, query: nil, ocr: ocr)}
+  end
+
+  @impl true
+  def handle_info({ref, {context, 0}}, socket) when socket.assigns.ocr.ref == ref do
+    question = socket.assigns.question
+    version = socket.assigns.version
+
+    prompt =
+    """
+    [INST] <<SYS>>
+    You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question.
+    If you do not know the answer, just say that you don't know. Use two sentences maximum and keep the answer concise.
+    <</SYS>>
+    Question: #{question}
+    Context: #{context}[/INST]
+    """
+
+    llama =
+      Task.async(fn ->
+        {:ok, prediction} = Replicate.Predictions.create(version, %{prompt: prompt})
+        Replicate.Predictions.wait(prediction)
+      end)
+
+    {:noreply, assign(socket, ocr: nil, llama: llama)}
+  end
+
+  @impl true
+  def handle_info({ref, {:ok, prediction}}, socket) when socket.assigns.llama.ref == ref do
     text = Enum.join(prediction.output)
     messages = socket.assigns.messages
     new_messages = messages ++ [%{user_id: nil, text: text, inserted_at: DateTime.utc_now()}]
 
-    {:noreply, assign(socket, query: nil, messages: new_messages, loading: false)}
+    {:noreply, assign(socket, llama: nil, messages: new_messages, loading: false, question: nil)}
   end
 
   @impl true
   def handle_info(_, socket) do
     {:noreply, socket}
   end
+
+  def handle_progress(:document, entry, socket) when entry.done? do
+    path =
+      consume_uploaded_entries(socket, :document, fn %{path: path}, _entry ->
+        dest = Path.join(["priv", "static", "uploads", Path.basename(path)])
+        File.cp!(path, dest)
+        {:ok, dest}
+      end)
+      |> List.first()
+
+    {:noreply, assign(socket, path: path)}
+  end
+
+  def handle_progress(_name, _entry, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -87,14 +139,15 @@ defmodule LlamaWeb.PageLive do
                       <div :if={@loading} class="typing"><div class="typing__dot"></div><div class="typing__dot"></div><div class="typing__dot"></div></div>
                     </div>
                   </div>
-                  <form class="px-4 py-2 flex flex-row items-end gap-x-2" phx-submit="add_message" phx-change="change_text">
+                  <form class="px-4 py-2 flex flex-row items-end gap-x-2" phx-submit="add_message" phx-change="change_text" phx-drop-target={@uploads.document.ref}>
+                    <.live_file_input class="sr-only" upload={@uploads.document} />
                     <div class="flex flex-col grow rounded-md border border-gray-300">
                       <div class="relative flex grow">
-                        <input id="message" name="message" value={@text} class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm placeholder:text-gray-400 text-gray-900" placeholder="Aa" type="text" />
+                        <input id="message" name="message" value={@text} class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm placeholder:text-gray-400 text-gray-900" placeholder={if is_nil(@path), do: "Drag a pdf here to start", else: "Ask a question..."} type="text" />
                       </div>
                     </div>
                     <div class="ml-1">
-                      <button type="submit" class="flex items-center justify-center h-10 w-10 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500">
+                        <button disabled={is_nil(@path)} type="submit" class={"flex items-center justify-center h-10 w-10 rounded-full #{if is_nil(@path), do: "cursor-not-allowed bg-gray-100 text-gray-300", else: "hover:bg-gray-300 bg-gray-200 text-gray-500"}"}>
                         <svg class="w-5 h-5 transform rotate-90 -mr-px" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
                         </svg>
