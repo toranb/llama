@@ -1,5 +1,12 @@
 # Llama
 
+First install a few dependencies on linux
+
+```
+  sudo apt install tesseract-ocr
+  sudo apt install poppler-utils
+```
+
 To start your Phoenix server:
 
   * Run `mix setup` to install and setup dependencies
