@@ -7,7 +7,7 @@ defmodule LlamaWeb.PageLive do
     model = Replicate.Models.get!("meta/llama-2-7b-chat")
     version = Replicate.Models.get_latest_version!(model)
 
-    socket = socket |> assign(version: version, messages: messages, text: nil, query: nil, loading: false)
+    socket = socket |> assign(version: version, messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, loading: false)
 
     {:ok, socket}
   end
@@ -20,37 +20,68 @@ defmodule LlamaWeb.PageLive do
   end
 
   @impl true
-  def handle_event("add_message", %{"message" => text}, socket) do
-    version = socket.assigns.version
-    messages = socket.assigns.messages
-    new_messages = messages ++ [%{user_id: 1, text: text, inserted_at: DateTime.utc_now()}]
+  def handle_event("add_message", _, %{assigns: %{loading: true}} = socket) do
+    {:noreply, socket}
+  end
 
-    prompt = """
-    [INST] <<SYS>>
-    You are an assistant for question-answering tasks.
-    If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.
-    <</SYS>>
-    #{text} [/INST] \
-    """
+  @impl true
+  def handle_event("add_message", %{"message" => question}, socket) do
+    path = "psql.pdf"
+    messages = socket.assigns.messages
+    new_messages = messages ++ [%{user_id: 1, text: question, inserted_at: DateTime.utc_now()}]
 
     query =
       Task.async(fn ->
-        {:ok, prediction} = Replicate.Predictions.create(version, %{prompt: prompt})
-        Replicate.Predictions.wait(prediction)
+        System.cmd("pdftoppm", [path] ++ ~w(demo -png))
       end)
 
-    socket = socket |> assign(query: query, loading: true, text: nil, messages: new_messages)
+    socket = socket |> assign(query: query, messages: new_messages, loading: true, text: nil, question: question)
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({ref, {:ok, prediction}}, socket) when socket.assigns.query.ref == ref do
+  def handle_info({ref, _}, socket) when socket.assigns.query.ref == ref do
+    ocr =
+      Task.async(fn ->
+        System.cmd("tesseract", ~w(demo-1.png stdout))
+      end)
+
+    {:noreply, assign(socket, query: nil, ocr: ocr)}
+  end
+
+  @impl true
+  def handle_info({ref, {context, 0}}, socket) when socket.assigns.ocr.ref == ref do
+    # IO.inspect(context)
+    question = socket.assigns.question
+    version = socket.assigns.version
+
+    prompt =
+    """
+    [INST] <<SYS>>
+    You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question.
+    If you do not know the answer, just say that you don't know. Use two sentences maximum and keep the answer concise.
+    <</SYS>>
+    Question: #{question}
+    Context: #{context}[/INST]
+    """
+
+    llama =
+      Task.async(fn ->
+        {:ok, prediction} = Replicate.Predictions.create(version, %{prompt: prompt})
+        Replicate.Predictions.wait(prediction)
+      end)
+
+    {:noreply, assign(socket, ocr: nil, llama: llama)}
+  end
+
+  @impl true
+  def handle_info({ref, {:ok, prediction}}, socket) when socket.assigns.llama.ref == ref do
     text = Enum.join(prediction.output)
     messages = socket.assigns.messages
     new_messages = messages ++ [%{user_id: nil, text: text, inserted_at: DateTime.utc_now()}]
 
-    {:noreply, assign(socket, query: nil, messages: new_messages, loading: false)}
+    {:noreply, assign(socket, llama: nil, messages: new_messages, loading: false, question: nil)}
   end
 
   @impl true
