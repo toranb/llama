@@ -17,7 +17,7 @@ defmodule LlamaWeb.Router do
   scope "/", LlamaWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", PageLive, :index
   end
 
   # Other scopes may use custom stacks.

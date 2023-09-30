@@ -32,6 +32,7 @@ defmodule Llama.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      {:replicate, "~> 1.1.1"},
       {:phoenix, "~> 1.7.7"},
       {:phoenix_html, "~> 3.3"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
