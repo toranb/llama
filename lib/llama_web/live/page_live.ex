@@ -7,10 +7,20 @@ defmodule LlamaWeb.PageLive do
 
     socket =
       socket
-      |> assign(messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, path: nil, loading: false)
+      |> assign(messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, path: nil, loading: false, focused: false)
       |> allow_upload(:document, accept: ~w(.pdf), progress: &handle_progress/3, auto_upload: true, max_entries: 1)
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_event("dragged", %{"focused" => focused}, socket) do
+    {:noreply, assign(socket, focused: focused)}
+  end
+
+  @impl true
+  def handle_event("remove_pdf", _, socket) do
+    {:noreply, assign(socket, path: nil)}
   end
 
   @impl true
@@ -22,6 +32,11 @@ defmodule LlamaWeb.PageLive do
 
   @impl true
   def handle_event("add_message", _, %{assigns: %{loading: true}} = socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("add_message", %{"message" => ""}, socket) do
     {:noreply, socket}
   end
 
@@ -70,7 +85,7 @@ defmodule LlamaWeb.PageLive do
         Nx.Serving.batched_run(ChatServing, prompt)
       end)
 
-    {:noreply, assign(socket, ocr: nil, llama: llama)}
+    {:noreply, assign(socket, ocr: nil, question: nil, llama: llama)}
   end
 
   @impl true
@@ -96,10 +111,10 @@ defmodule LlamaWeb.PageLive do
     {:noreply, socket}
   end
 
-  def handle_progress(:document, entry, socket) when entry.done? do
+  def handle_progress(:document, %{client_name: filename} = entry, socket) when entry.done? do
     path =
       consume_uploaded_entries(socket, :document, fn %{path: path}, _entry ->
-        dest = Path.join(["priv", "static", "uploads", Path.basename(path)])
+        dest = Path.join(["priv", "static", "uploads", Path.basename("#{path}/#{filename}")])
         File.cp!(path, dest)
         {:ok, dest}
       end)
@@ -141,9 +156,26 @@ defmodule LlamaWeb.PageLive do
                   </div>
                   <form class="px-4 py-2 flex flex-row items-end gap-x-2" phx-submit="add_message" phx-change="change_text" phx-drop-target={@uploads.document.ref}>
                     <.live_file_input class="sr-only" upload={@uploads.document} />
-                    <div class="flex flex-col grow rounded-md border border-gray-300">
+                    <div id="dragme" phx-hook="Drag" class={"flex flex-col grow rounded-md #{if !is_nil(@path), do: "border"} #{if @focused, do: "ring-1 border-indigo-500 ring-indigo-500 border"}"}>
+                      <div :if={!is_nil(@path)} class="mx-2 mt-3 mb-2 flex flex-row items-center rounded-md gap-x-4 gap-y-3 flex-wrap">
+                        <div class="relative">
+                          <div class="px-2 h-14 min-w-14 min-h-14 inline-flex items-center gap-x-2 text-sm rounded-lg whitespace-pre-wrap bg-gray-200 text-gray-900 bg-gray-200 text-gray-900 max-w-24 sm:max-w-32">
+                            <div class="p-2 inline-flex justify-center items-center rounded-full bg-gray-300 text-gray-900 bg-gray-300 text-gray-900">
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="w-5 h-5">
+                                <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"></path>
+                              </svg>
+                            </div>
+                            <span class="truncate"><%= String.split(@path, "/") |> List.last() %></span>
+                          </div>
+                          <button type="button" phx-click="remove_pdf" class="p-1 absolute -top-2 -right-2 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 border border-gray-300 shadow" title="Delete">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="h-4 w-4 text-gray-700">
+                              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
                       <div class="relative flex grow">
-                        <input id="message" name="message" value={@text} class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm placeholder:text-gray-400 text-gray-900" placeholder={if is_nil(@path), do: "Drag a pdf here to start", else: "Ask a question..."} type="text" />
+                        <input id="message" name="message" value={@text} class={"#{if !is_nil(@path), do: "border-transparent"} block w-full rounded-md border-gray-300 shadow-sm #{if is_nil(@path), do: "focus:border-indigo-500 focus:ring-indigo-500"} text-sm placeholder:text-gray-400 text-gray-900"} placeholder={if is_nil(@path), do: "drag pdf here to get started", else: "Ask a question..."} type="text" />
                       </div>
                     </div>
                     <div class="ml-1">
