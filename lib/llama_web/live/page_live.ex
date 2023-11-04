@@ -7,7 +7,7 @@ defmodule LlamaWeb.PageLive do
 
     socket =
       socket
-      |> assign(messages: messages, text: nil, query: nil, ocr: nil, llama: nil, question: nil, path: nil, loading: false, focused: false)
+      |> assign(messages: messages, text: nil, query: nil, llama: nil, question: nil, path: nil, loading: false, focused: false)
       |> allow_upload(:document, accept: ~w(.pdf), progress: &handle_progress/3, auto_upload: true, max_entries: 1)
 
     {:ok, socket}
@@ -46,9 +46,13 @@ defmodule LlamaWeb.PageLive do
     messages = socket.assigns.messages
     new_messages = messages ++ [%{user_id: 1, text: question, inserted_at: DateTime.utc_now()}]
 
+    id = :rand.uniform(1000)
+    directory = "priv/pdf/#{id}"
+    File.mkdir_p!(directory)
+
     query =
       Task.async(fn ->
-        System.cmd("pdftoppm", [path] ++ ~w(demo -png))
+        {directory, System.cmd("pdftoppm", [path, "#{directory}/image", "-png"])}
       end)
 
     socket = socket |> assign(query: query, messages: new_messages, loading: true, text: nil, question: question)
@@ -57,18 +61,31 @@ defmodule LlamaWeb.PageLive do
   end
 
   @impl true
-  def handle_info({ref, _}, socket) when socket.assigns.query.ref == ref do
-    ocr =
-      Task.async(fn ->
-        System.cmd("tesseract", ~w(demo-1.png stdout))
-      end)
-
-    {:noreply, assign(socket, query: nil, ocr: ocr)}
-  end
-
-  @impl true
-  def handle_info({ref, {context, 0}}, socket) when socket.assigns.ocr.ref == ref do
+  def handle_info({ref, {directory, result}}, socket) when socket.assigns.query.ref == ref do
     question = socket.assigns.question
+
+    context =
+      result
+      |> case do
+        {"", 0} ->
+          Path.wildcard("#{directory}/*.png")
+          |> Enum.reduce("", fn filepath, acc ->
+            System.cmd("tesseract", [filepath] ++ ~w(stdout))
+            |> case do
+              {"", 0} ->
+                acc
+
+              {context, 0} ->
+                acc <> " " <> context
+
+              _ ->
+                acc
+            end
+          end)
+
+        _ ->
+          ""
+      end
 
     prompt =
     """
@@ -82,17 +99,19 @@ defmodule LlamaWeb.PageLive do
 
     llama =
       Task.async(fn ->
-        Nx.Serving.batched_run(ChatServing, prompt)
+        {question, Nx.Serving.batched_run(ChatServing, prompt)}
       end)
 
-    {:noreply, assign(socket, ocr: nil, question: nil, llama: llama)}
+    {:noreply, assign(socket, query: nil, question: nil, llama: llama)}
   end
 
   @impl true
-  def handle_info({ref, %{results: [%{text: result}]}}, socket) when socket.assigns.llama.ref == ref do
-    [_, text] = String.split(result, "[/INST]")
+  def handle_info({ref, {question, %{results: [%{text: text}]}}}, socket) when socket.assigns.llama.ref == ref do
+    results = String.split(text, "#{question}")
+    result = List.delete_at(results, 0) |> Enum.join()
+
     messages = socket.assigns.messages
-    new_messages = messages ++ [%{user_id: nil, text: String.trim(text), inserted_at: DateTime.utc_now()}]
+    new_messages = messages ++ [%{user_id: nil, text: String.trim(result), inserted_at: DateTime.utc_now()}]
 
     {:noreply, assign(socket, llama: nil, messages: new_messages, loading: false, question: nil)}
   end

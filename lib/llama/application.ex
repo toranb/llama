@@ -35,7 +35,7 @@ defmodule Llama.Application do
     {:ok, tokenizer} = Bumblebee.load_tokenizer(llama)
     {:ok, generation_config} = Bumblebee.load_generation_config(llama)
 
-    generation_config = Bumblebee.configure(generation_config, max_new_tokens: 250)
+    generation_config = Bumblebee.configure(generation_config, max_new_tokens: 500)
     Bumblebee.Text.generation(model_info, tokenizer, generation_config, defn_options: [compiler: EXLA])
   end
 
